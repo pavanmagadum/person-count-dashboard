@@ -1,0 +1,296 @@
+import { useEffect, useState, useRef } from "react";
+import { database } from "./firebase";
+import { ref, update, onValue } from "firebase/database";
+import * as tf from "@tensorflow/tfjs";
+import * as cocoSsd from "@tensorflow-models/coco-ssd";
+import {
+  Chart as ChartJS,
+  LineElement,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  Tooltip,
+  Legend,
+  Filler
+} from "chart.js";
+import { Line } from "react-chartjs-2";
+import "./App.css";
+
+ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend, Filler);
+
+function App() {
+  // UI & DATA STATE
+  const [count, setCount] = useState(0);
+  const [history, setHistory] = useState(new Array(10).fill(0));
+  const [timestamp, setTimestamp] = useState("SYSTEM_SYNCING...");
+  const [isActive, setIsActive] = useState(false);
+  const [statusColor, setStatusColor] = useState("#00f2ff");
+  const [statusMessage, setStatusMessage] = useState("INITIALIZING_AI...");
+  const [activeSource, setActiveSource] = useState("SCANNING");
+  const [accuracy, setAccuracy] = useState(0);
+  
+  // HUD & CAMERA CONTROL
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [isModelLoaded, setIsModelLoaded] = useState(false);
+
+  // REFS FOR CAMERA & DETECTION
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const modelRef = useRef(null);
+  const detectionInterval = useRef(null);
+
+  // RISK LOGIC (SIMPLIFIED ENGLISH)
+  const getRiskUI = (val) => {
+    if (val === 0) return { label: "Idle / No People", color: "#64748b", steps: 0, msg: "System ready. No activity detected." };
+    if (val <= 2) return { label: "Low Risk (Normal)", color: "#10b981", steps: 1, msg: "Low activity detected. Environment is safe." };
+    if (val <= 5) return { label: "Medium Risk (Careful)", color: "#f59e0b", steps: 2, msg: "Increased occupancy. Caution advised." };
+    return { label: "High Risk (Crowded)", color: "#f43f5e", steps: 3, msg: "⚠️ HIGH DENSITY! Immediate action required." };
+  };
+
+  const risk = getRiskUI(count);
+
+  // 1. LOAD AI MODEL ON STARTUP
+  useEffect(() => {
+    const loadModel = async () => {
+      try {
+        await tf.ready();
+        const model = await cocoSsd.load();
+        modelRef.current = model;
+        setIsModelLoaded(true);
+        setStatusMessage("NEURAL_ENGINE_READY");
+      } catch (err) {
+        console.error("Model load error:", err);
+        setStatusMessage("LOAD_ERROR: REFRESH_PAGE");
+      }
+    };
+    loadModel();
+
+    // Listener for external updates (if any)
+    const dataRef = ref(database, "person_detection");
+    const unsubscribe = onValue(dataRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data && !isCameraOpen) { // Only update from DB if we aren't detecting locally
+        setCount(data.person_count || 0);
+        setTimestamp(data.timestamp || new Date().toLocaleTimeString());
+        setAccuracy(data.accuracy || 99.8);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [isCameraOpen]);
+
+  // 2. CAMERA FEED & DETECTION LOOP
+  useEffect(() => {
+    if (isCameraOpen) {
+      startCamera();
+    } else {
+      stopCamera();
+    }
+  }, [isCameraOpen]);
+
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: "environment", width: 640, height: 480 }, 
+        audio: false 
+      });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current.play();
+          runDetection();
+        };
+      }
+    } catch (err) {
+      console.error("Camera access denied:", err);
+      setIsCameraOpen(false);
+    }
+  };
+
+  const stopCamera = () => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+    }
+    if (detectionInterval.current) {
+      clearInterval(detectionInterval.current);
+    }
+  };
+
+  const runDetection = () => {
+    detectionInterval.current = setInterval(async () => {
+      if (modelRef.current && videoRef.current && videoRef.current.readyState === 4) {
+        const predictions = await modelRef.current.detect(videoRef.current);
+        
+        // Filter for "person" only
+        const persons = predictions.filter(p => p.class === "person");
+        const personCount = persons.length;
+        
+        // Calculate average accuracy (confidence)
+        const avgAcc = persons.length > 0 
+          ? (persons.reduce((sum, p) => sum + p.score, 0) / persons.length * 100).toFixed(1)
+          : 0;
+
+        // Update State
+        setCount(personCount);
+        setAccuracy(Number(avgAcc) || 0);
+        setHistory(prev => [...prev.slice(1), personCount]);
+        setTimestamp(new Date().toLocaleTimeString());
+        setIsActive(true);
+        setActiveSource("LOCAL_WEBCAM");
+
+        // Sync to Firebase
+        syncToFirebase(personCount, Number(avgAcc));
+
+        // Draw bounding boxes
+        drawBoxes(persons);
+      }
+    }, 500); // 2 FPS to be smooth but not laggy
+  };
+
+  const drawBoxes = (persons) => {
+    const ctx = canvasRef.current.getContext("2d");
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    
+    persons.forEach(person => {
+      const [x, y, width, height] = person.bbox;
+      ctx.strokeStyle = risk.color;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x, y, width, height);
+      
+      ctx.fillStyle = risk.color;
+      ctx.font = "bold 12px Inter";
+      ctx.fillText(`${(person.score * 100).toFixed(0)}% Person`, x, y > 10 ? y - 5 : 10);
+    });
+  };
+
+  const syncToFirebase = (personCount, avgAcc) => {
+    const dataRef = ref(database, "person_detection");
+    const riskData = getRiskUI(personCount);
+    update(dataRef, {
+      person_count: personCount,
+      accuracy: personCount > 0 ? avgAcc : 99.8,
+      timestamp: new Date().toLocaleString(),
+      crowd_level: riskData.label,
+      message: riskData.msg,
+      status_color: riskData.color,
+      person_detected: personCount > 0 ? 1 : 0
+    });
+  };
+
+  // CHART DATA
+  const chartData = {
+    labels: new Array(10).fill(""),
+    datasets: [{
+      data: history,
+      borderColor: risk.color,
+      backgroundColor: (context) => {
+        const ctx = context.chart.ctx;
+        const gradient = ctx.createLinearGradient(0, 0, 0, 250);
+        gradient.addColorStop(0, `${risk.color}44`);
+        gradient.addColorStop(1, `${risk.color}00`);
+        return gradient;
+      },
+      borderWidth: 2,
+      tension: 0.4,
+      fill: true,
+      pointRadius: 0,
+    }]
+  };
+
+  return (
+    <div className="app-container">
+      <nav className="navbar">
+        <div className="nav-brand">
+          <span className="logo-icon">💠</span>
+          <span className="logo-text">QUANTUM_VISION</span>
+        </div>
+        
+        <div className={`nav-links ${isMenuOpen ? 'active' : ''}`}>
+          <a href="#dashboard" onClick={() => setIsMenuOpen(false)}>Live Monitor</a>
+          <button 
+            className="nav-cta" 
+            onClick={() => setIsCameraOpen(!isCameraOpen)}
+            disabled={!isModelLoaded}
+          >
+            {!isModelLoaded ? 'Loading AI...' : (isCameraOpen ? 'Stop Security Scan' : 'Start Camera Scan')}
+          </button>
+        </div>
+
+        <div className="nav-toggle" onClick={() => setIsMenuOpen(!isMenuOpen)}>
+          <div className={`hamburger ${isMenuOpen ? 'open' : ''}`}></div>
+        </div>
+      </nav>
+
+      <main className="dashboard-wrapper fade-in" id="dashboard">
+        <header className="header-section">
+          <div className="title-group">
+            <div className="system-tag">Browser-Based AI Detection System</div>
+            <h1>Safety Monitoring</h1>
+          </div>
+          <div className="stream-status">
+            <div className="status-label">NEURAL_ENGINE</div>
+            <div className="status-indicator" style={{ color: isCameraOpen ? '#10b981' : '#64748b' }}>
+              {isCameraOpen ? '● RUNNING_LOCAL' : '○ STANDBY'}
+            </div>
+          </div>
+        </header>
+
+        <div className="main-grid">
+          <section className="main-visual">
+            <div className="visual-header">
+              <span className="system-tag">{isCameraOpen ? 'LOCAL_DETECTION_STREAM' : 'Timeline Activity History'}</span>
+              <span className="source-badge" style={{ color: statusColor, background: `${statusColor}11` }}>{activeSource}</span>
+            </div>
+            
+            <div className="visual-content">
+              {isCameraOpen ? (
+                <div className="camera-container">
+                    <video ref={videoRef} className="live-camera" muted playsInline />
+                    <canvas ref={canvasRef} width="640" height="480" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
+                    <div className="camera-hud">
+                        <div className="hud-line">SCANNING ● ACTIVE</div>
+                        <div className="hud-line" style={{ color: risk.color }}>RISK: {risk.label.toUpperCase()}</div>
+                    </div>
+                </div>
+              ) : (
+                <div className="chart-container">
+                  <Line data={chartData} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { display: false }, x: { display: false } } }} />
+                </div>
+              )}
+            </div>
+          </section>
+
+          <aside className="bento-sidebar">
+            <div className="card stat-hero">
+              <div className="system-tag">Current Number of People</div>
+              <div className="huge-number">{count}</div>
+              <div className="stat-detail">AI Confidence Level: {accuracy}%</div>
+            </div>
+
+            <div className="card">
+              <div className="system-tag">Safety Level Check</div>
+              <div className="risk-level-hud">
+                <div className="status-ring" style={{ color: risk.color, backgroundColor: risk.color }}></div>
+                <div className="matrix-label" style={{ color: risk.color }}>{risk.label}</div>
+              </div>
+              <div className="matrix-visualizer">
+                {[1, 2, 3].map(s => (
+                  <div key={s} className={`matrix-step ${risk.steps >= s ? 'active' : ''}`} style={{ color: risk.color, backgroundColor: risk.steps >= s ? 'currentColor' : 'rgba(255,255,255,0.05)' }} />
+                ))}
+              </div>
+              <p className="matrix-desc">{risk.msg}</p>
+            </div>
+          </aside>
+        </div>
+
+        <footer className="footer-meta">
+          <div className="meta-item">INSTANCE_ID: {activeSource} // TIMESTAMP: {timestamp}</div>
+          <div className="meta-item">MODE: CLIENT_SIDE_INFERENCE // ENGINE: TFJS_COCO_SSD</div>
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+export default App;
