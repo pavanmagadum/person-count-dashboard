@@ -28,7 +28,7 @@ function App() {
   const [statusMessage, setStatusMessage] = useState("INITIALIZING_AI...");
   const [activeSource, setActiveSource] = useState("SCANNING");
   const [accuracy, setAccuracy] = useState(0);
-  
+
   // HUD & CAMERA CONTROL
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
@@ -91,9 +91,9 @@ function App() {
 
   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: "environment", width: 640, height: 480 }, 
-        audio: false 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: 640, height: 480 },
+        audio: false
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -121,13 +121,13 @@ function App() {
     detectionInterval.current = setInterval(async () => {
       if (modelRef.current && videoRef.current && videoRef.current.readyState === 4) {
         const predictions = await modelRef.current.detect(videoRef.current);
-        
+
         // Filter for "person" only
         const persons = predictions.filter(p => p.class === "person");
         const personCount = persons.length;
-        
+
         // Calculate average accuracy (confidence)
-        const avgAcc = persons.length > 0 
+        const avgAcc = persons.length > 0
           ? (persons.reduce((sum, p) => sum + p.score, 0) / persons.length * 100).toFixed(1)
           : 0;
 
@@ -151,13 +151,13 @@ function App() {
   const drawBoxes = (persons) => {
     const ctx = canvasRef.current.getContext("2d");
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    
+
     persons.forEach(person => {
       const [x, y, width, height] = person.bbox;
       ctx.strokeStyle = risk.color;
       ctx.lineWidth = 3;
       ctx.strokeRect(x, y, width, height);
-      
+
       ctx.fillStyle = risk.color;
       ctx.font = "bold 12px Inter";
       ctx.fillText(`${(person.score * 100).toFixed(0)}% Person`, x, y > 10 ? y - 5 : 10);
@@ -205,12 +205,15 @@ function App() {
           <span className="logo-icon">💠</span>
           <span className="logo-text">QUANTUM_VISION</span>
         </div>
-        
+
         <div className={`nav-links ${isMenuOpen ? 'active' : ''}`}>
           <a href="#dashboard" onClick={() => setIsMenuOpen(false)}>Live Monitor</a>
-          <button 
-            className="nav-cta" 
-            onClick={() => setIsCameraOpen(!isCameraOpen)}
+          <button
+            className="nav-cta"
+            onClick={() => {
+              setIsCameraOpen(!isCameraOpen);
+              setIsMenuOpen(false);
+            }}
             disabled={!isModelLoaded}
           >
             {!isModelLoaded ? 'Loading AI...' : (isCameraOpen ? 'Stop Security Scan' : 'Start Camera Scan')}
@@ -242,16 +245,16 @@ function App() {
               <span className="system-tag">{isCameraOpen ? 'LOCAL_DETECTION_STREAM' : 'Timeline Activity History'}</span>
               <span className="source-badge" style={{ color: statusColor, background: `${statusColor}11` }}>{activeSource}</span>
             </div>
-            
+
             <div className="visual-content">
               {isCameraOpen ? (
                 <div className="camera-container">
-                    <video ref={videoRef} className="live-camera" muted playsInline />
-                    <canvas ref={canvasRef} width="640" height="480" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
-                    <div className="camera-hud">
-                        <div className="hud-line">SCANNING ● ACTIVE</div>
-                        <div className="hud-line" style={{ color: risk.color }}>RISK: {risk.label.toUpperCase()}</div>
-                    </div>
+                  <video ref={videoRef} className="live-camera" muted playsInline />
+                  <canvas ref={canvasRef} width="640" height="480" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
+                  <div className="camera-hud">
+                    <div className="hud-line">SCANNING ● ACTIVE</div>
+                    <div className="hud-line" style={{ color: risk.color }}>RISK: {risk.label.toUpperCase()}</div>
+                  </div>
                 </div>
               ) : (
                 <div className="chart-container">
