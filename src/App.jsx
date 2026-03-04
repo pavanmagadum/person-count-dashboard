@@ -206,35 +206,35 @@ function App() {
           <span className="logo-text">QUANTUM_VISION</span>
         </div>
 
-        <div className={`nav-links ${isMenuOpen ? 'active' : ''}`}>
-          <a href="#dashboard" onClick={() => setIsMenuOpen(false)}>Live Monitor</a>
-          <button
-            className="nav-cta"
-            onClick={() => {
-              setIsCameraOpen(!isCameraOpen);
-              setIsMenuOpen(false);
-            }}
-            disabled={!isModelLoaded}
-          >
-            {!isModelLoaded ? 'Loading AI...' : (isCameraOpen ? 'Stop Security Scan' : 'Start Camera Scan')}
-          </button>
-        </div>
-
-        <div className="nav-toggle" onClick={() => setIsMenuOpen(!isMenuOpen)}>
-          <div className={`hamburger ${isMenuOpen ? 'open' : ''}`}></div>
+        {/* Standard Navigation */}
+        <div className="desktop-nav">
+          <a href="#dashboard" className="nav-item">Monitor</a>
+          <a href="#" className="nav-item">Settings</a>
         </div>
       </nav>
 
       <main className="dashboard-wrapper fade-in" id="dashboard">
         <header className="header-section">
           <div className="title-group">
-            <div className="system-tag">Browser-Based AI Detection System</div>
+            <div className="system-tag">AI Visual Intelligence</div>
             <h1>Safety Monitoring</h1>
           </div>
+
+          <div className="main-action-area">
+            <button
+              className="action-btn-primary"
+              onClick={() => setIsCameraOpen(!isCameraOpen)}
+              disabled={!isModelLoaded}
+            >
+              <span className="btn-pulse"></span>
+              {!isModelLoaded ? 'INITIALIZING AI...' : (isCameraOpen ? 'STOP SECURITY SCAN' : 'OPEN WEB CAMERA')}
+            </button>
+          </div>
+
           <div className="stream-status">
             <div className="status-label">NEURAL_ENGINE</div>
             <div className="status-indicator" style={{ color: isCameraOpen ? '#10b981' : '#64748b' }}>
-              {isCameraOpen ? '● RUNNING_LOCAL' : '○ STANDBY'}
+              {isCameraOpen ? '● ACTIVE' : '○ STANDBY'}
             </div>
           </div>
         </header>
