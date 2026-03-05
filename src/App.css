@@ -646,6 +646,89 @@ body::before {
   }
 }
 
+/* --- TELEGRAM ALERT CARD --- */
+.telegram-alert-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.telegram-status-area {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 15px 0;
+}
+
+.telegram-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 136, 204, 0.15);
+  padding: 6px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0088cc;
+  border: 1px solid rgba(0, 136, 204, 0.3);
+}
+
+.alert-indicator {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #64748b;
+  transition: all 0.3s ease;
+}
+
+.alert-indicator.active {
+  color: var(--accent-rose);
+  text-shadow: 0 0 10px var(--accent-rose);
+  animation: pulseColor 1s infinite alternate;
+}
+
+@keyframes pulseColor {
+  from {
+    opacity: 0.6;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.threshold-bar {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+  margin-top: 15px;
+  overflow: hidden;
+}
+
+.threshold-fill {
+  height: 100%;
+  transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: 0 0 10px currentColor;
+}
+
+@media (max-width: 768px) {
+  .telegram-status-area {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+}
+
+.last-alert-meta {
+  font-size: 9px;
+  color: #475569;
+  letter-spacing: 0.5px;
+  margin-top: 10px;
+  font-weight: 700;
+  text-align: right;
+  font-family: monospace;
+}
+
 /* Avoid Horizontal Scroll & Add Fade In */
 .fade-in {
   animation: fadeIn 1.2s cubic-bezier(0.22, 1, 0.36, 1);

@@ -148,6 +148,121 @@ function App() {
     }, 500); // 2 FPS to be smooth but not laggy
   };
 
+  // 3. TELEGRAM ALERT SYSTEM
+  const [alertStatus, setAlertStatus] = useState("IDLE");
+  const [lastAlertTimestamp, setLastAlertTimestamp] = useState(null);
+  const lastAlertTime = useRef(0);
+  const ALERT_COOLDOWN = 60000; // 1 minute cooldown
+
+  // Central Monitor: Fires regardless of Data Source (Local or Firebase)
+  useEffect(() => {
+    if (count > 5) {
+      console.log(`[QUANTUM_AI] Threshold Exceeded: ${count}. Attempting alert...`);
+      sendTelegramAlert(count);
+    }
+  }, [count]);
+
+  const sendTelegramAlert = async (currentCount) => {
+    const now = Date.now();
+
+    // NOTE: Replace these with your actual credentials for live alerts
+    const botToken = "8647494412:AAHVCC_6A4M5LdwGWxD6UvSapEtV5F78gcE";
+    const chatId = "912525748";
+
+    // 1. Validation Check
+    const token = botToken.trim();
+    const chat = chatId.trim();
+
+    if (!token || !chat || token.includes("YOUR_TOKEN")) {
+      setAlertStatus("MISSING_CREDENTIALS");
+      setTimeout(() => setAlertStatus("IDLE"), 3000);
+      return;
+    }
+
+    // 2. Cooldown check
+    if (currentCount !== "TEST" && (now - lastAlertTime.current < ALERT_COOLDOWN)) {
+      return;
+    }
+
+    const reportCount = currentCount === "TEST" ? "DEMO_DETECTION" : currentCount;
+
+    try {
+      setAlertStatus("PREPARING_IMAGE...");
+
+      // A. CAPTURE SNAPSHOT FROM CANVAS/VIDEO
+      let photoBlob = null;
+      if (isCameraOpen && videoRef.current) {
+        const captureCanvas = document.createElement("canvas");
+        captureCanvas.width = 640;
+        captureCanvas.height = 480;
+        const ctx = captureCanvas.getContext("2d");
+
+        // Draw the frame
+        ctx.drawImage(videoRef.current, 0, 0, 640, 480);
+        // Overlay the detection boxes from the main canvas
+        if (canvasRef.current) {
+          ctx.drawImage(canvasRef.current, 0, 0, 640, 480);
+        }
+
+        photoBlob = await new Promise(resolve => captureCanvas.toBlob(resolve, 'image/jpeg', 0.8));
+      }
+
+      setAlertStatus("DISPATCHING...");
+
+      const alertCaption = `🚨 *QUANTUM_VISION SECURITY ALERT* 🚨\n\n` +
+        `👤 *Density Detected:* ${reportCount} People\n` +
+        `📍 *Location:* Sector_01_Scanner\n` +
+        `⏰ *Timestamp:* ${new Date().toLocaleTimeString()}\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `_Visual Confirmation Attached_`;
+
+      let response;
+
+      if (photoBlob) {
+        // Send Image with Caption
+        const formData = new FormData();
+        formData.append("chat_id", chat);
+        formData.append("photo", photoBlob, "security_alert.jpg");
+        formData.append("caption", alertCaption);
+        formData.append("parse_mode", "Markdown");
+
+        response = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+          method: "POST",
+          body: formData
+        });
+      } else {
+        // Fallback to text if camera is not active
+        response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chat,
+            text: alertCaption + "\n\n(Camera Offline - Text Only Alert)",
+            parse_mode: "Markdown"
+          })
+        });
+      }
+
+      const resData = await response.json();
+
+      if (response.ok) {
+        console.log("[QUANTUM_AI] Alert Dispatched Successfully!");
+        setAlertStatus("ALERT_SENT");
+        setLastAlertTimestamp(new Date().toLocaleTimeString());
+        if (currentCount !== "TEST") lastAlertTime.current = now;
+        setTimeout(() => setAlertStatus("IDLE"), 5000);
+      } else {
+        console.error("[QUANTUM_AI] Telegram API Error:", resData);
+        setAlertStatus(resData.description || "API_ERROR");
+        setTimeout(() => setAlertStatus("IDLE"), 4000);
+      }
+    } catch (error) {
+      console.error("[QUANTUM_AI] Network Failure:", error);
+      setAlertStatus("CONN_FAILED");
+      setTimeout(() => setAlertStatus("IDLE"), 4000);
+    }
+  };
+
   const drawBoxes = (persons) => {
     const ctx = canvasRef.current.getContext("2d");
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
@@ -269,6 +384,25 @@ function App() {
               <div className="system-tag">Current Number of People</div>
               <div className="huge-number">{count}</div>
               <div className="stat-detail">AI Confidence Level: {accuracy}%</div>
+            </div>
+
+            <div className="card telegram-alert-card">
+              <div className="system-tag">Smart Alert Link</div>
+              <div className="telegram-status-area">
+                <div className="telegram-badge">
+                  <span className="tg-icon">✈️</span>
+                  <span>Telegram Bot</span>
+                </div>
+                <div className={`alert-indicator ${alertStatus !== "IDLE" ? 'active' : ''}`}>
+                  {alertStatus}
+                </div>
+              </div>
+              <p className="matrix-desc">Auto-notifies authorities when person count exceeds 5 detected instances.</p>
+
+              <div className="threshold-bar">
+                <div className="threshold-fill" style={{ width: `${Math.min((count / 5) * 100, 100)}%`, backgroundColor: count > 5 ? 'var(--accent-rose)' : 'var(--accent-cyan)' }}></div>
+              </div>
+              {lastAlertTimestamp && <div className="last-alert-meta">LAST_DISPATCH: {lastAlertTimestamp}</div>}
             </div>
 
             <div className="card">
