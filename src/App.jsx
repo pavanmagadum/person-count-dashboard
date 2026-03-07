@@ -14,20 +14,49 @@ import {
   Filler
 } from "chart.js";
 import { Line } from "react-chartjs-2";
+import { useReducer, useMemo, useCallback } from "react";
 import "./App.css";
 
 ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend, Filler);
 
 function App() {
-  // UI & DATA STATE
-  const [count, setCount] = useState(0);
-  const [history, setHistory] = useState(new Array(10).fill(0));
-  const [timestamp, setTimestamp] = useState("SYSTEM_SYNCING...");
-  const [isActive, setIsActive] = useState(false);
-  const [statusColor, setStatusColor] = useState("#00f2ff");
-  const [statusMessage, setStatusMessage] = useState("INITIALIZING_AI...");
-  const [activeSource, setActiveSource] = useState("SCANNING");
-  const [accuracy, setAccuracy] = useState(0);
+  // REDUCER FOR BATCHING DATA UPDATES (Efficiency Boost)
+  const initialState = {
+    count: 0,
+    accuracy: 0,
+    history: new Array(15).fill(0), // Increased history length for "High Frequency" view
+    timestamp: "SYSTEM_READY",
+    activeSource: "SCANNING",
+    statusMessage: "INITIALIZING_AI...",
+  };
+
+  function detectionReducer(state, action) {
+    switch (action.type) {
+      case "UPDATE_DETECTION":
+        return {
+          ...state,
+          count: action.count,
+          accuracy: action.accuracy,
+          history: [...state.history.slice(1), action.count],
+          timestamp: new Date().toLocaleTimeString(),
+          activeSource: action.source || "LOCAL_WEBCAM",
+        };
+      case "UPDATE_FROM_FIREBASE":
+        return {
+          ...state,
+          count: action.count,
+          accuracy: action.accuracy,
+          timestamp: action.timestamp,
+          activeSource: "REMOTE_DATABASE",
+        };
+      case "SET_STATUS":
+        return { ...state, statusMessage: action.message };
+      default:
+        return state;
+    }
+  }
+
+  const [state, dispatch] = useReducer(detectionReducer, initialState);
 
   // HUD & CAMERA CONTROL
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -39,6 +68,7 @@ function App() {
   const canvasRef = useRef(null);
   const modelRef = useRef(null);
   const detectionInterval = useRef(null);
+  const firebaseSyncTimer = useRef(0);
 
   // RISK LOGIC (SIMPLIFIED ENGLISH)
   const getRiskUI = (val) => {
@@ -48,32 +78,38 @@ function App() {
     return { label: "High Risk (Crowded)", color: "#f43f5e", steps: 3, msg: "⚠️ HIGH DENSITY! Immediate action required." };
   };
 
-  const risk = getRiskUI(count);
-
-  // 1. LOAD AI MODEL ON STARTUP
+  // 1. LOAD AI MODEL ON STARTUP (With WebGL optimization for efficiency)
   useEffect(() => {
     const loadModel = async () => {
       try {
+        // Set WebGL backend for high efficiency on browsers/mobile
+        await tf.setBackend('webgl');
         await tf.ready();
+        const model = await cocoSsd.load({ base: 'mobilenet_v2' }); // Mobilenet V2 is lighter for mobile
+        modelRef.current = model;
+        setIsModelLoaded(true);
+        dispatch({ type: "SET_STATUS", message: "NEURAL_ENGINE_READY" });
+      } catch (err) {
+        console.warn("WebGL failure, falling back to CPU:", err);
+        await tf.setBackend('cpu');
         const model = await cocoSsd.load();
         modelRef.current = model;
         setIsModelLoaded(true);
-        setStatusMessage("NEURAL_ENGINE_READY");
-      } catch (err) {
-        console.error("Model load error:", err);
-        setStatusMessage("LOAD_ERROR: REFRESH_PAGE");
       }
     };
     loadModel();
 
-    // Listener for external updates (if any)
+    // Listener for external updates (throttled sync)
     const dataRef = ref(database, "person_detection");
     const unsubscribe = onValue(dataRef, (snapshot) => {
       const data = snapshot.val();
-      if (data && !isCameraOpen) { // Only update from DB if we aren't detecting locally
-        setCount(data.person_count || 0);
-        setTimestamp(data.timestamp || new Date().toLocaleTimeString());
-        setAccuracy(data.accuracy || 99.8);
+      if (data && !isCameraOpen) {
+        dispatch({
+          type: "UPDATE_FROM_FIREBASE",
+          count: data.person_count || 0,
+          accuracy: data.accuracy || 99.8,
+          timestamp: data.timestamp || new Date().toLocaleTimeString()
+        });
       }
     });
 
@@ -118,34 +154,39 @@ function App() {
   };
 
   const runDetection = () => {
+    // INCREASED DETECTION FREQUENCY (200ms) but more efficient per frame
     detectionInterval.current = setInterval(async () => {
       if (modelRef.current && videoRef.current && videoRef.current.readyState === 4) {
-        const predictions = await modelRef.current.detect(videoRef.current);
+        // Run inference in a tidy block to prevent memory leaks (High Efficiency)
+        const predictions = await tf.tidy(async () => {
+          return await modelRef.current.detect(videoRef.current);
+        });
 
-        // Filter for "person" only
         const persons = predictions.filter(p => p.class === "person");
         const personCount = persons.length;
-
-        // Calculate average accuracy (confidence)
         const avgAcc = persons.length > 0
-          ? (persons.reduce((sum, p) => sum + p.score, 0) / persons.length * 100).toFixed(1)
+          ? Number((persons.reduce((sum, p) => sum + p.score, 0) / persons.length * 100).toFixed(1))
           : 0;
 
-        // Update State
-        setCount(personCount);
-        setAccuracy(Number(avgAcc) || 0);
-        setHistory(prev => [...prev.slice(1), personCount]);
-        setTimestamp(new Date().toLocaleTimeString());
-        setIsActive(true);
-        setActiveSource("LOCAL_WEBCAM");
+        // BATCH ALL STATE UPDATES (Single Re-render)
+        dispatch({
+          type: "UPDATE_DETECTION",
+          count: personCount,
+          accuracy: avgAcc,
+          source: "LOCAL_DETECTION_STREAM"
+        });
 
-        // Sync to Firebase
-        syncToFirebase(personCount, Number(avgAcc));
+        // SYNC TO FIREBASE (THROTTLED: Only every 1.5 seconds for efficiency)
+        const now = Date.now();
+        if (now - firebaseSyncTimer.current > 1500) {
+          syncToFirebase(personCount, avgAcc);
+          firebaseSyncTimer.current = now;
+        }
 
-        // Draw bounding boxes
-        drawBoxes(persons);
+        // DRAW BOXES
+        requestAnimationFrame(() => drawBoxes(persons, getRiskUI(personCount)));
       }
-    }, 500); // 2 FPS to be smooth but not laggy
+    }, 250); // High frequency (4 FPS) optimized for Mobile Stability
   };
 
   // 3. TELEGRAM ALERT SYSTEM
@@ -154,19 +195,19 @@ function App() {
   const lastAlertTime = useRef(0);
   const ALERT_COOLDOWN = 60000; // 1 minute cooldown
 
-  // Central Monitor: Fires regardless of Data Source (Local or Firebase)
+  // Central Monitor: Fires regardless of Data Source (Now using state.count)
   useEffect(() => {
-    if (count > 5) {
-      console.log(`[QUANTUM_AI] Threshold Exceeded: ${count}. Attempting alert...`);
-      sendTelegramAlert(count);
+    if (state.count > 5) {
+      console.log(`[QUANTUM_AI] Threshold Exceeded: ${state.count}.`);
+      sendTelegramAlert(state.count);
     }
-  }, [count]);
+  }, [state.count]);
 
   const sendTelegramAlert = async (currentCount) => {
     const now = Date.now();
 
     // NOTE: Replace these with your actual credentials for live alerts
-    const botToken = "8647494412:AAHVCC_6A4M5LdwGWxD6UvSapEtV5F78gcE";
+    const botToken = "";
     const chatId = "912525748";
 
     // 1. Validation Check
@@ -263,17 +304,18 @@ function App() {
     }
   };
 
-  const drawBoxes = (persons) => {
+  const drawBoxes = (persons, currentRisk) => {
+    if (!canvasRef.current) return;
     const ctx = canvasRef.current.getContext("2d");
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
     persons.forEach(person => {
       const [x, y, width, height] = person.bbox;
-      ctx.strokeStyle = risk.color;
+      ctx.strokeStyle = currentRisk.color;
       ctx.lineWidth = 3;
       ctx.strokeRect(x, y, width, height);
 
-      ctx.fillStyle = risk.color;
+      ctx.fillStyle = currentRisk.color;
       ctx.font = "bold 12px Inter";
       ctx.fillText(`${(person.score * 100).toFixed(0)}% Person`, x, y > 10 ? y - 5 : 10);
     });
@@ -293,11 +335,13 @@ function App() {
     });
   };
 
-  // CHART DATA
-  const chartData = {
-    labels: new Array(10).fill(""),
+  // 4. MEMOIZED CHART & UI DATA (Critical for Performance)
+  const risk = useMemo(() => getRiskUI(state.count), [state.count]);
+
+  const chartData = useMemo(() => ({
+    labels: new Array(state.history.length).fill(""),
     datasets: [{
-      data: history,
+      data: state.history,
       borderColor: risk.color,
       backgroundColor: (context) => {
         const ctx = context.chart.ctx;
@@ -311,7 +355,7 @@ function App() {
       fill: true,
       pointRadius: 0,
     }]
-  };
+  }), [state.history, risk.color]);
 
   return (
     <div className="app-container">
@@ -358,14 +402,14 @@ function App() {
           <section className="main-visual">
             <div className="visual-header">
               <span className="system-tag">{isCameraOpen ? 'LOCAL_DETECTION_STREAM' : 'Timeline Activity History'}</span>
-              <span className="source-badge" style={{ color: statusColor, background: `${statusColor}11` }}>{activeSource}</span>
+              <span className="source-badge" style={{ color: risk.color, background: `${risk.color}11` }}>{state.activeSource}</span>
             </div>
 
             <div className="visual-content">
               {isCameraOpen ? (
                 <div className="camera-container">
                   <video ref={videoRef} className="live-camera" muted playsInline />
-                  <canvas ref={canvasRef} width="640" height="480" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
+                  <canvas ref={canvasRef} width="640" height="480" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', willChange: 'transform' }} />
                   <div className="camera-hud">
                     <div className="hud-line">SCANNING ● ACTIVE</div>
                     <div className="hud-line" style={{ color: risk.color }}>RISK: {risk.label.toUpperCase()}</div>
@@ -382,8 +426,8 @@ function App() {
           <aside className="bento-sidebar">
             <div className="card stat-hero">
               <div className="system-tag">Current Number of People</div>
-              <div className="huge-number">{count}</div>
-              <div className="stat-detail">AI Confidence Level: {accuracy}%</div>
+              <div className="huge-number">{state.count}</div>
+              <div className="stat-detail">AI Confidence Level: {state.accuracy}%</div>
             </div>
 
             <div className="card telegram-alert-card">
@@ -400,7 +444,7 @@ function App() {
               <p className="matrix-desc">Auto-notifies authorities when person count exceeds 5 detected instances.</p>
 
               <div className="threshold-bar">
-                <div className="threshold-fill" style={{ width: `${Math.min((count / 5) * 100, 100)}%`, backgroundColor: count > 5 ? 'var(--accent-rose)' : 'var(--accent-cyan)' }}></div>
+                <div className="threshold-fill" style={{ width: `${Math.min((state.count / 5) * 100, 100)}%`, backgroundColor: state.count > 5 ? 'var(--accent-rose)' : 'var(--accent-cyan)' }}></div>
               </div>
               {lastAlertTimestamp && <div className="last-alert-meta">LAST_DISPATCH: {lastAlertTimestamp}</div>}
             </div>
@@ -422,7 +466,7 @@ function App() {
         </div>
 
         <footer className="footer-meta">
-          <div className="meta-item">INSTANCE_ID: {activeSource} // TIMESTAMP: {timestamp}</div>
+          <div className="meta-item">INSTANCE_ID: {state.activeSource} // TIMESTAMP: {state.timestamp}</div>
           <div className="meta-item">MODE: CLIENT_SIDE_INFERENCE // ENGINE: TFJS_COCO_SSD</div>
         </footer>
       </main>
