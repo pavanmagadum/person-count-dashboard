@@ -640,6 +640,99 @@ body::before {
   }
 }
 
+/* --- ANALYTICS UPGRADES --- */
+.card-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.mini-card {
+  padding: 20px !important;
+  text-align: center;
+}
+
+.mini-number {
+  font-size: 32px;
+  font-weight: 800;
+  margin-top: 5px;
+  font-family: 'Inter', sans-serif;
+}
+
+.eco-badge {
+  margin-top: 15px;
+  padding: 8px 16px;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid var(--accent-emerald);
+  color: var(--accent-emerald);
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-align: center;
+  animation: ecoPulse 2s infinite alternate;
+}
+
+@keyframes ecoPulse {
+  from {
+    box-shadow: 0 0 5px rgba(16, 185, 129, 0.2);
+  }
+
+  to {
+    box-shadow: 0 0 15px rgba(16, 185, 129, 0.5);
+  }
+}
+
+.analytics-matrix {
+  gap: 15px;
+}
+
+.zone-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 15px 0;
+}
+
+.zone-cell {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 15px;
+  font-size: 10px;
+  font-weight: 800;
+  color: #64748b;
+  text-align: center;
+  transition: all 0.3s ease;
+}
+
+.zone-cell.hot {
+  background: rgba(244, 63, 94, 0.1);
+  border-color: var(--accent-rose);
+  color: var(--accent-rose);
+  animation: hotZonePulse 1.5s infinite;
+}
+
+@keyframes hotZonePulse {
+  0% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.02);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+@media (max-width: 480px) {
+  .card-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* --- TELEGRAM ALERT CARD --- */
 .telegram-alert-card {
   position: relative;
