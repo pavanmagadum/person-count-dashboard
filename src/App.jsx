@@ -160,35 +160,98 @@ function App() {
     }
   };
 
-  const runDetection = () => {
-    detectionInterval.current = setInterval(async () => {
-      if (modelRef.current && videoRef.current && videoRef.current.readyState === 4) {
-        const predictions = await modelRef.current.detect(videoRef.current, 20, 0.4);
-        console.log("Raw Predictions:", predictions);
+  // 2. TRACKING STATE (Strict State Machine Tracker)
+  const trackerRef = useRef({
+    nextId: 1,
+    tracks: {}, // id: { centroid, state, side, lastSeen }
+  });
 
-        // 1. FILTER: High-precision person filter
+  const runDetection = useCallback(async () => {
+    if (!isCameraOpen) return;
+
+    if (modelRef.current && videoRef.current && videoRef.current.readyState === 4) {
+      try {
+        const predictions = await modelRef.current.detect(videoRef.current, 10, 0.4);
         const persons = predictions.filter(p => p.class === "person");
         const personCount = persons.length;
         const faceDetected = persons.some(p => p.score > 0.8);
-
         const avgAcc = persons.length > 0
           ? Number((persons.reduce((sum, p) => sum + p.score, 0) / persons.length * 100).toFixed(1))
           : 0;
 
-        // 2. TRIPWIRE: Directional Tracking Logic
-        persons.forEach(person => {
-          const centroidY = person.bbox[1] + person.bbox[3] / 2;
-          const match = prevCentroids.current.find(c => Math.abs(c.x - person.bbox[0]) < 50);
+        const now = Date.now();
+        const currentTracks = {};
+        const TRIPWIRE_Y = 240;
+        const BUFFER = 30; // Buffer zone (210px to 270px)
 
-          if (match) {
-            if (match.y < 240 && centroidY >= 240) {
-              dispatch({ type: "INC_TRAFFIC", direction: "IN" });
-            } else if (match.y > 240 && centroidY <= 240) {
-              dispatch({ type: "INC_TRAFFIC", direction: "OUT" });
+        persons.forEach(person => {
+          const [x, y, w, h] = person.bbox;
+          const cx = x + w / 2;
+          const cy = y + h / 2;
+
+          let bestMatchId = null;
+          let minDistance = 60;
+
+          Object.keys(trackerRef.current.tracks).forEach(id => {
+            const track = trackerRef.current.tracks[id];
+            const dist = Math.sqrt(Math.pow(cx - track.centroid.x, 2) + Math.pow(cy - track.centroid.y, 2));
+            if (dist < minDistance) {
+              minDistance = dist;
+              bestMatchId = id;
             }
+          });
+
+          if (bestMatchId) {
+            const track = trackerRef.current.tracks[bestMatchId];
+
+            // Side determination: -1 (Top), 0 (Buffer), 1 (Bottom)
+            let currentSide = 0;
+            if (cy < TRIPWIRE_Y - BUFFER) currentSide = -1;
+            else if (cy > TRIPWIRE_Y + BUFFER) currentSide = 1;
+
+            // CROSSING LOGIC: Must go from a side, through buffer, to the OTHER side
+            if (track.side !== 0 && currentSide !== 0 && track.side !== currentSide) {
+              if (currentSide === 1 && !track.entered) { // Top -> Bottom
+                dispatch({ type: "INC_TRAFFIC", direction: "IN" });
+                track.entered = true;
+              } else if (currentSide === -1 && !track.exited) { // Bottom -> Top
+                dispatch({ type: "INC_TRAFFIC", direction: "OUT" });
+                track.exited = true;
+              }
+            }
+
+            // Update side ONLY if out of buffer to keep the last known "clean" side
+            if (currentSide !== 0) track.side = currentSide;
+
+            track.centroid = { x: cx, y: cy };
+            track.lastSeen = now;
+            currentTracks[bestMatchId] = track;
+            delete trackerRef.current.tracks[bestMatchId];
+          } else {
+            // New track: side is 0 if starting in buffer
+            const newId = trackerRef.current.nextId++;
+            let initialSide = 0;
+            if (cy < TRIPWIRE_Y - BUFFER) initialSide = -1;
+            else if (cy > TRIPWIRE_Y + BUFFER) initialSide = 1;
+
+            currentTracks[newId] = {
+              centroid: { x: cx, y: cy },
+              entered: false,
+              exited: false,
+              side: initialSide,
+              lastSeen: now
+            };
           }
         });
-        prevCentroids.current = persons.map(p => ({ x: p.bbox[0], y: p.bbox[1] + p.bbox[3] / 2 }));
+
+        // Track retention: 3 seconds
+        Object.keys(trackerRef.current.tracks).forEach(id => {
+          if (now - trackerRef.current.tracks[id].lastSeen < 3000) {
+            currentTracks[id] = trackerRef.current.tracks[id];
+          }
+        });
+
+        trackerRef.current.tracks = currentTracks;
 
         // 3. STATE UPDATE
         dispatch({
@@ -198,16 +261,21 @@ function App() {
           source: faceDetected ? "FACE_SCANNED_ACTIVE" : "LOCAL_WEBCAM"
         });
 
-        const now = Date.now();
         if (now - firebaseSyncTimer.current > 1500) {
           syncToFirebase(personCount, avgAcc);
           firebaseSyncTimer.current = now;
         }
 
         requestAnimationFrame(() => drawBoxes(persons, getRiskUI(personCount)));
+      } catch (err) {
+        console.error("Detection error:", err);
       }
-    }, 250);
-  };
+    }
+
+    if (isCameraOpen) {
+      setTimeout(runDetection, 200);
+    }
+  }, [isCameraOpen]);
 
   // 3. TELEGRAM ALERT SYSTEM
   const [alertStatus, setAlertStatus] = useState("IDLE");
